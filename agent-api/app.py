@@ -39,23 +39,6 @@ MESSAGE_LENGTH = Histogram(
     buckets=[10, 50, 100, 200, 500, 1000, 2000, 5000]
 )
 
-# Classifier-only latency. Isolates the regex evaluation from total request time.
-# If this spikes while REQUEST_LATENCY is normal → regex engine is under pressure.
-# If REQUEST_LATENCY spikes but this stays flat → overhead is elsewhere (Flask, I/O).
-CLASSIFIER_DURATION = Histogram(
-    'agent_classifier_duration_seconds',
-    'Time spent inside classify_rejection() (regex evaluation only)',
-    ['prompt_version'],
-    buckets=[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1]
-)
-
-# In-flight request gauge. A leading indicator: if this climbs while latency is
-# still normal, queuing is about to start. Good early warning of thread exhaustion.
-ACTIVE_REQUESTS = Gauge(
-    'agent_active_requests',
-    'Number of /ask requests currently being processed'
-)
-
 # Build-info gauge — always 1, exposes prompt_version as a label.
 # Grafana can plot this as a step function to annotate version-change events on
 # other graphs, without needing to join on a timestamp field.
@@ -142,7 +125,6 @@ def ask():
     Returns rejection status, reason, prompt version, and answer.
     """
     start_time = time.time()
-    ACTIVE_REQUESTS.inc()
 
     # Defaults — overwritten below before the finally block records them.
     rejected_str = "false"
@@ -168,11 +150,8 @@ def ask():
         # Observe message length before classification. Done regardless of outcome
         # so we have the full distribution including messages that get rejected.
         MESSAGE_LENGTH.labels(prompt_version=PROMPT_VERSION).observe(len(message))
-
-        # Time the classifier in isolation so latency spikes can be attributed.
-        t0 = time.time()
+        
         rejected, reason = classify_rejection(message)
-        CLASSIFIER_DURATION.labels(prompt_version=PROMPT_VERSION).observe(time.time() - t0)
 
         if rejected:
             rejected_str = "true"
@@ -212,7 +191,6 @@ def ask():
             reason=reason_str,
             http_status=http_status
         ).inc()
-        ACTIVE_REQUESTS.dec()
 
 
 @app.route('/healthz', methods=['GET'])
