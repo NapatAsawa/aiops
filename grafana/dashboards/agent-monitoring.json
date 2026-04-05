@@ -180,7 +180,10 @@
       "id": 2,
       "options": {
         "legend": {
-          "calcs": ["mean", "last"],
+          "calcs": [
+            "mean",
+            "last"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -197,7 +200,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum by (prompt_version) (rate(agent_rejections_total[1m])) / sum by (prompt_version) (rate(agent_requests_total{route=\"/ask\"}[1m]))",
+          "expr": "sum by (prompt_version) (rate(agent_requests_total{rejected=\"true\"}[1m])) / sum by (prompt_version) (rate(agent_requests_total{route=\"/ask\"}[1m]))",
           "legendFormat": "{{prompt_version}}",
           "range": true,
           "refId": "A"
@@ -292,7 +295,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum by (reason) (rate(agent_rejections_total[1m]))",
+          "expr": "sum by (reason) (rate(agent_requests_total{rejected=\"true\"}[1m]))",
           "legendFormat": "{{reason}}",
           "range": true,
           "refId": "A"
@@ -370,7 +373,10 @@
       "id": 4,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -453,7 +459,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -466,7 +474,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(agent_rejections_total[1m])) / sum(rate(agent_requests_total{route=\"/ask\"}[1m]))",
+          "expr": "sum(rate(agent_requests_total{rejected=\"true\"}[1m])) / sum(rate(agent_requests_total{route=\"/ask\"}[1m]))",
           "legendFormat": "Overall Run",
           "range": true,
           "refId": "A"
@@ -512,7 +520,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -571,7 +581,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -584,7 +596,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(agent_rejections_total)",
+          "expr": "sum(agent_requests_total{rejected=\"true\"})",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -656,7 +668,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -681,7 +695,10 @@
   ],
   "refresh": "5s",
   "schemaVersion": 38,
-  "tags": ["agent", "monitoring"],
+  "tags": [
+    "agent",
+    "monitoring"
+  ],
   "templating": {
     "list": []
   },

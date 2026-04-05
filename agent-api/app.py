@@ -28,15 +28,6 @@ REQUEST_LATENCY = Histogram(
     buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
 )
 
-# Dedicated rejection counter. Simpler PromQL than filtering REQUEST_COUNT —
-# rate(agent_rejections_total[5m]) by (reason) vs a multi-label filter.
-# The `reason` dimension lets operators distinguish attack waves (prompt_injection
-# dominating) from classifier regressions (dangerous_action rising unexpectedly).
-REJECTION_COUNT = Counter(
-    'agent_rejections_total',
-    'Rejected requests broken down by rejection reason',
-    ['prompt_version', 'reason']
-)
 
 # Input message character-length distribution. Abnormally large messages
 # are a leading indicator of prompt-stuffing attacks before they show up in rejection
@@ -164,9 +155,6 @@ def ask():
             rejected_str = "true"
             reason_str = "invalid_request"
             http_status = "400"
-            # Count the rejection even for malformed requests so the rejection
-            # rate alert fires on broken callers, not just adversarial traffic.
-            REJECTION_COUNT.labels(prompt_version=PROMPT_VERSION, reason="invalid_request").inc()
             return jsonify({
                 'error': 'Missing required field: message',
                 'rejected': True,
@@ -189,7 +177,6 @@ def ask():
         if rejected:
             rejected_str = "true"
             reason_str = reason or ""
-            REJECTION_COUNT.labels(prompt_version=PROMPT_VERSION, reason=reason_str).inc()
             response_body = {
                 'rejected': True,
                 'reason': reason,
