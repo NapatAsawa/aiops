@@ -22,7 +22,7 @@ spec:
   container:
     name: agent-api
     # TODO: This should be updated by the CD pipeline
-    image_tag: "latest"
+    image_tag: "c6ee2fc3aa7dacea78e2ba782772c2457c416676"
     port: 8080
     
     env:
@@ -43,4 +43,5 @@ spec:
 # | Timestamp | Commit SHA | Deployed By |
 # -------------------------------------------------------------
 # | (will be populated by CD pipeline)  |
+# | 2026-04-05T11:56:45Z | c6ee2fc | NapatAsawa |
 # -------------------------------------------------------------
