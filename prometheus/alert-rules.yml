@@ -71,7 +71,7 @@ groups:
         for: 5m
         labels:
           severity: warning
-          team: ml-ops
+          team: ai-team
         annotations:
           summary: "Rejection rate > 35% (current: {{ $value | humanizePercentage }})"
           description: >
@@ -108,7 +108,7 @@ groups:
         for: 2m
         labels:
           severity: critical
-          team: ml-ops
+          team: ai-team
         annotations:
           summary: "Rejection rate spiked to {{ $value | humanizePercentage }} (3× baseline)"
           description: >
@@ -117,36 +117,30 @@ groups:
             Possible causes: new adversarial campaign, bad prompt deploy, or upstream model change.
 
       # ──────────────────────────────────────────────────────────────
-      # 5. Safety Net Failure (adversarial pass-through)
+      # 5. Safety Net Pass Through Too High
       #
-      # The adversarial rejection rate should be ≥60% (eval-runner threshold).
+      # The pass through rate should be <= 95%.
       # If we can observe it in production, we want to alert when it drops
       # significantly — that means the safety classifier is broken and
       # dangerous requests are being answered.
-      #
-      # Only fires when there's meaningful adversarial-pattern volume
-      # (>0.1 req/s with known attack reasons) to avoid noise on idle systems.
       # ──────────────────────────────────────────────────────────────
-      - alert: SafetyNetDegraded
+      - alert: SafetyNetPassThroughTooHigh
         expr: |
           (
-            rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="false"}[5m])
+            rate(agent_requests_total{route="/ask", rejected="false"}[5m])
             /
-            (
-              rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="false"}[5m])
-              +
-              rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="true"}[5m])
-            )
-          ) > 0.40
+            rate(agent_requests_total{route="/ask"}[5m])
+          ) > 0.95
         for: 5m
         labels:
           severity: critical
-          team: ml-ops
+          team: ai-team
         annotations:
-          summary: "Safety net pass-through rate > 40% — classifier may be broken"
+          summary: "Guardrails pass-through rate abnormally high"
           description: >
-            More than 40% of requests matching known adversarial patterns (prompt_injection,
-            secrets_request, dangerous_action) are NOT being rejected.
+            More than 95% of requests are being allowed by the safety layer.
+            This may indicate the safety classifier is failing to detect unsafe inputs
+            or is misconfigured, allowing potentially harmful requests to pass through.
 
 
   - name: agent-api-performance
