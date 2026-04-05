@@ -1,37 +1,211 @@
 groups:
-  - name: agent-api-alerts
+  - name: agent-api-availability
+    interval: 15s 
     rules:
+
+      # ──────────────────────────────────────────────────────────────
+      # 1. API Down
+      #
+      # Fires if Prometheus can't scrape /metrics for 1 minute.
+      # 1 minute is the minimum meaningful window — shorter risks
+      # paging on a single missed scrape during a rolling restart.
+      # ──────────────────────────────────────────────────────────────
       - alert: AgentAPIDown
         expr: up{job="agent-api"} == 0
         for: 1m
         labels:
           severity: critical
+          team: platform
         annotations:
-          summary: "Agent API is down"
-          description: "The agent API has been unreachable for more than 1 minute."
+          summary: "Agent API is unreachable"
+          description: >
+            Prometheus has not been able to scrape {{ $labels.instance }} for > 1 minute.
+            The API is likely crashed or the container has stopped.
 
-      # TODO: Implement alerting for abnormal rejection rates
-      # Consider: What rejection rate is "normal" for this system?
-      #           How do you distinguish a real problem from noise?
-      # 
-      # Observe the running system before setting thresholds.
+      # ──────────────────────────────────────────────────────────────
+      # 2. No Traffic (Dead-man's Switch)
+      #
+      # If request rate drops to zero for 3 minutes the traffic generator
+      # has either crashed or something upstream is broken.
+      # This catches silent failures that 'up' wouldn't — the API can be
+      # up and scrape-able while receiving zero real traffic.
+      # ──────────────────────────────────────────────────────────────
+      - alert: AgentAPINoTraffic
+        expr: rate(agent_requests_total{route="/ask"}[2m]) == 0
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "No traffic reaching /ask for 3+ minutes"
+          description: >
+            Zero requests/s on /ask for 3 consecutive minutes.
+            Normal baseline is ~2 req/s. Either the traffic generator crashed
+            or the load balancer / upstream caller is broken.
+
+  - name: agent-api-quality
+    interval: 15s
+    rules:
+
+      # ──────────────────────────────────────────────────────────────
+      # 3. High Sustained Rejection Rate
+      #
+      # Threshold: >35% over 5 minutes.
+      #
+      # Reasoning: synthetic traffic baseline is 15% rejections.
+      # 35% gives a 2.3× headroom above normal before paging.
+      # We use a 5-minute window to avoid alerting on a short burst
+      # of adversarial probes (which is expected occasionally).
+      #
+      # This alert means legitimate users are being over-rejected —
+      # either the prompt classifier regressed or the model changed its
+      # behaviour in a way that catches benign inputs.
+      # ──────────────────────────────────────────────────────────────
       - alert: HighRejectionRate
-        expr: vector(0) > 1
+        expr: |
+          (
+            rate(agent_requests_total{route="/ask", rejected="true"}[5m])
+            /
+            rate(agent_requests_total{route="/ask"}[5m])
+          ) > 0.35
         for: 5m
         labels:
           severity: warning
+          team: ml-ops
         annotations:
-          summary: "TODO"
-          description: "TODO"
+          summary: "Rejection rate > 35% (current: {{ $value | humanizePercentage }})"
+          description: >
+            The 5-minute rejection rate is {{ $value | humanizePercentage }},
+            well above the expected ~15% baseline.
+            This likely means the classifier is incorrectly flagging benign
+            messages, or an adversarial campaign targeting the API has started.
 
-      # TODO: Implement alerting for sudden changes in rejection behavior
-      # Consider: What constitutes a "spike" vs normal variance?
-      #           How do you compare current behavior to baseline?
+      # ──────────────────────────────────────────────────────────────
+      # 4. Rejection Rate Spike (sudden change vs baseline)
+      #
+      # Uses a ratio of short-window vs long-window rate to detect
+      # sudden spikes without needing a fixed threshold.
+      # Fires when the 1m rate is > 3× the 30m rolling average.
+      #
+      # Why 3×: at 15% baseline, 3× = 45%, which is a clear anomaly.
+      # The 30m window is long enough to represent a stable baseline
+      # but short enough to not mask a genuine sustained regression.
+      # The 2m "for:" prevents false positives from a single bad minute.
+      # ──────────────────────────────────────────────────────────────
       - alert: RejectionRateSpike
-        expr: vector(0) > 1
+        expr: |
+          (
+            rate(agent_requests_total{route="/ask", rejected="true"}[1m])
+            /
+            rate(agent_requests_total{route="/ask"}[1m])
+          )
+          >
+          3 * (
+            rate(agent_requests_total{route="/ask", rejected="true"}[30m])
+            /
+            rate(agent_requests_total{route="/ask"}[30m])
+          )
+        for: 2m
+        labels:
+          severity: critical
+          team: ml-ops
+        annotations:
+          summary: "Rejection rate spiked to {{ $value | humanizePercentage }} (3× baseline)"
+          description: >
+            The 1-minute rejection rate ({{ $value | humanizePercentage }}) is more than
+            3× the 30-minute rolling average. This is a sudden anomaly, not a gradual drift.
+            Possible causes: new adversarial campaign, bad prompt deploy, or upstream model change.
+
+      # ──────────────────────────────────────────────────────────────
+      # 5. Safety Net Failure (adversarial pass-through)
+      #
+      # The adversarial rejection rate should be ≥60% (eval-runner threshold).
+      # If we can observe it in production, we want to alert when it drops
+      # significantly — that means the safety classifier is broken and
+      # dangerous requests are being answered.
+      #
+      # Only fires when there's meaningful adversarial-pattern volume
+      # (>0.1 req/s with known attack reasons) to avoid noise on idle systems.
+      # ──────────────────────────────────────────────────────────────
+      - alert: SafetyNetDegraded
+        expr: |
+          (
+            rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="false"}[5m])
+            /
+            (
+              rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="false"}[5m])
+              +
+              rate(agent_requests_total{route="/ask", reason=~"prompt_injection|secrets_request|dangerous_action", rejected="true"}[5m])
+            )
+          ) > 0.40
+        for: 5m
+        labels:
+          severity: critical
+          team: ml-ops
+        annotations:
+          summary: "Safety net pass-through rate > 40% — classifier may be broken"
+          description: >
+            More than 40% of requests matching known adversarial patterns (prompt_injection,
+            secrets_request, dangerous_action) are NOT being rejected.
+
+
+  - name: agent-api-performance
+    interval: 15s
+    rules:
+
+      # ──────────────────────────────────────────────────────────────
+      # 6. High Latency (p95)
+      #
+      # Threshold: p95 > 1s over 5 minutes.
+      #
+      # The app is simple regex-based classification — normal p95 is
+      # well under 50ms. >1s sustained p95 indicates something is
+      # genuinely wrong: GC pressure, thread starvation, or a
+      # dependency added upstream that's slow.
+      # We alert on p95, not p50, to avoid noise from occasional
+      # slow requests that don't affect most users.
+      # ──────────────────────────────────────────────────────────────
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(agent_request_latency_seconds_bucket{route="/ask"}[5m])
+          ) > 1.0
         for: 5m
         labels:
           severity: warning
+          team: platform
         annotations:
-          summary: "TODO"
-          description: "TODO"
+          summary: "p95 latency > 1s (current: {{ $value | humanizeDuration }})"
+          description: >
+            The 95th-percentile response time for /ask has exceeded 1 second
+            for 5 consecutive minutes. Normal p95 is < 50ms for this regex-based classifier.
+            Likely causes: CPU starvation, container throttling, or a recent code change.
+
+      # ──────────────────────────────────────────────────────────────
+      # 7. Error Rate (non-200 responses)
+      #
+      # Tracks HTTP errors from the API (400s, 500s).
+      # Threshold: >5% error rate over 5 minutes.
+      # 400s from malformed requests are somewhat expected; >5% sustained
+      # suggests either a broken client or an API regression.
+      #
+      # Note: requires an 'http_status' label on agent_requests_total,
+      # which is added in Task 3. Kept here for completeness; will be
+      # a no-op until that label exists.
+      # ──────────────────────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(agent_requests_total{route="/ask", http_status=~"4..|5.."}[5m])
+            /
+            rate(agent_requests_total{route="/ask"}[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HTTP error rate > 5% (current: {{ $value | humanizePercentage }})"
+          description: >
+            More than 5% of /ask requests are returning non-2xx HTTP responses.
+            This may indicate malformed client requests (400) or API crashes (500).
