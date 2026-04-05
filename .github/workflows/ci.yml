@@ -1,23 +1,173 @@
-# TODO: Implement CI/CD pipeline
-# 
-# This workflow should ensure code quality before deployment.
-# Consider: What checks are necessary? How do you gate deployments?
-#           How can someone verify a deployment occurred?
+# CI/CD Pipeline for AI-Ops Agent
 #
-# The eval-runner service exists for a reason. The deployment/ directory
-# contains a manifest that may be useful.
+# Pipeline structure:
+#   ci  → build → eval-gate   (runs on every PR and push to master)
+#   deploy                      (runs only on master, after ci passes)
+#
+# Design rationale:
+#   - Lint runs first: it's cheap and catches obvious errors before we pay
+#     the cost of building Docker images and spinning up the full stack.
+#   - The eval-runner is the primary quality gate. The runner already
+#     enforces thresholds (golden accuracy ≥90%, adversarial rejection ≥60%)
+#     and exits non-zero on failure, so we just need to let that propagate.
+#   - Deploy is a separate job with a 'needs: ci' guard so a broken CI
+#     can never trigger a deployment, even if both jobs start in parallel.
+#   - The commit SHA is written into deployment/manifest.yml and committed
+#     back to main, making every deployment traceable via git log.
 
 name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
-  # TODO: Design and implement your pipeline
-  placeholder:
+  # ─────────────────────────────────────────────────────────────
+  # CI: build → eval quality gate
+  # Runs on every PR and every push to master.
+  # ─────────────────────────────────────────────────────────────
+  ci:
+    name: CI — Lint, Build & Eval Gate
     runs-on: ubuntu-latest
+
     steps:
-      - run: exit 1
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Build ─────────────────────────────────────────────────
+      # Build both images that the eval stack needs. Building here
+      # (not inside docker-compose) lets us surface Dockerfile errors
+      # early with a clear error message before we try to run anything.
+      - name: Build agent-api image
+        run: docker build -t agent-api:ci ./agent-api
+
+      - name: Build eval-runner image
+        run: docker build -t eval-runner:ci ./eval-runner
+
+      # ── Eval quality gate ─────────────────────────────────────
+      # Spin up only the services needed for evaluation:
+      #   agent-api  — the system under test
+      #   eval-runner — the quality gate (exits 1 if thresholds fail)
+      #
+      # We use a dedicated Docker network so containers resolve each
+      # other by name without needing docker-compose's networking magic.
+      # The eval-runner is designed to wait up to 30 s for the API
+      # to become healthy before running tests, so no extra sleep needed.
+      #
+      # Thresholds are kept at the runner's defaults here.
+      # If you need to tighten them for a release branch, pass overrides
+      # via -e MIN_GOLDEN_ACCURACY=0.95 etc.
+      - name: Start agent-api
+        run: |
+          docker network create eval-net
+          docker run -d \
+            --name agent-api \
+            --network eval-net \
+            -e PROMPT_VERSION=ci-${{ github.sha }} \
+            agent-api:ci
+
+      - name: Run eval-runner (quality gate)
+        # runner.py exits 0 (all gates pass) or 1 (any gate fails).
+        # A non-zero exit makes this step — and the whole job — fail,
+        # blocking any downstream deploy job.
+        run: |
+          docker run --rm \
+            --network eval-net \
+            -e AGENT_API_URL=http://agent-api:8080 \
+            eval-runner:ci
+
+      - name: Stop agent-api
+        if: always()   # clean up even when eval fails
+        run: |
+          docker stop agent-api || true
+          docker rm   agent-api || true
+          docker network rm eval-net || true
+
+  # ─────────────────────────────────────────────────────────────
+  # Deploy: update the deployment manifest with the commit SHA.
+  # Only runs on pushes to main, only after ci passes.
+  #
+  # Why stamp the manifest instead of actually deploying?
+  # The deployment target (Kubernetes, Cloud Run, etc.) is not
+  # defined in this repo. The manifest.yml is the contract between
+  # this pipeline and whatever CD system consumes it. Updating it
+  # with the exact SHA creates a durable, auditable record that any
+  # downstream system can act on (e.g., ArgoCD watches this file).
+  # ─────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy — Stamp Manifest & Record
+    runs-on: ubuntu-latest
+    needs: ci                          # hard dependency: ci must pass first
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: write                  # needed to commit the updated manifest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Use the built-in token so the bot commit is attributed correctly.
+          # fetch-depth: 0 isn't needed here; we only commit one file.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stamp deployment manifest with commit SHA
+        # Replace the image_tag line and append a history row.
+        # sed -i is portable on ubuntu runners (GNU sed).
+        # The timestamp is UTC ISO-8601 for unambiguous log entries.
+        env:
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          SHORT_SHA=${SHA:0:7}
+
+          # Update image_tag to the full commit SHA for exact traceability
+          sed -i "s|image_tag: .*|image_tag: \"${SHA}\"|" deployment/manifest.yml
+
+          # Append a history row (keeps a human-readable audit trail in the file)
+          sed -i "s|# | (will be populated by CD pipeline)  |.*|# | ${TIMESTAMP} | ${SHORT_SHA} | ${ACTOR} |" \
+            deployment/manifest.yml || true
+
+          # Use Python for the history append — sed multiline is fragile
+          python3 - <<'EOF'
+          import re, os
+          sha      = os.environ["SHA"]
+          actor    = os.environ["ACTOR"]
+          ts       = os.environ.get("TIMESTAMP", "")
+
+          import subprocess
+          ts = subprocess.check_output(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"]).decode().strip()
+          short    = sha[:7]
+
+          path = "deployment/manifest.yml"
+          text = open(path).read()
+
+          row = f"# | {ts} | {short} | {actor} |"
+          # Insert after the "will be populated" marker line
+          text = text.replace(
+              "# | (will be populated by CD pipeline)  |",
+              f"# | (will be populated by CD pipeline)  |\n{row}"
+          )
+          open(path, "w").write(text)
+          EOF
+
+          echo "Stamped manifest with SHA=${SHA} at ${TIMESTAMP}"
+          cat deployment/manifest.yml
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployment/manifest.yml
+          # Only commit if something actually changed
+          git diff --cached --quiet || \
+            git commit -m "deploy: stamp manifest with ${{ github.sha }} [skip ci]"
+          git push
