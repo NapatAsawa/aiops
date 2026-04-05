@@ -53,7 +53,7 @@ groups:
       # Threshold: >35% over 5 minutes.
       #
       # Reasoning: synthetic traffic baseline is 15% rejections.
-      # 35% gives a 2.3× headroom above normal before paging.
+      # 35% gives a 2.3× on top.
       # We use a 5-minute window to avoid alerting on a short burst
       # of adversarial probes (which is expected occasionally).
       #
@@ -152,8 +152,7 @@ groups:
       #
       # Threshold: p95 > 1s over 5 minutes.
       #
-      # The app is simple regex-based classification — normal p95 is
-      # well under 50ms. >1s sustained p95 indicates something is
+      # normal p95 is well under 50ms. >1s sustained p95 indicates something is
       # genuinely wrong: GC pressure, thread starvation, or a
       # dependency added upstream that's slow.
       # We alert on p95, not p50, to avoid noise from occasional

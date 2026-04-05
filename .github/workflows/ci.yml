@@ -53,7 +53,7 @@ jobs:
           docker run -d \
             --name agent-api \
             --network eval-net \
-            -e PROMPT_VERSION=ci-${{ github.sha }} \
+            -e PROMPT_VERSION=ci \
             agent-api:ci
 
       - name: Run eval-runner (quality gate).
