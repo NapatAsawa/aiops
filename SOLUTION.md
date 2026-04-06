@@ -6,37 +6,32 @@
 ### Design Decisions
 
 #### Pipeline Structure
-- **CI Stage** (runs on every PR and push to master): Builds Docker images and runs eval-runner as quality gate(For a real-world use case, may need to push the image to the container registry after the quality gate has successfully passed.)
-- **Deploy Stage** (runs only on master after CI passes): Updates image tag in deployment manifest with commit SHA for traceability \
+- **CI Stage** (runs on every PR and push to master): Builds Docker images and runs eval-runner as quality gate
+- **Deploy Stage** (runs only on master after CI passes): Updates image tag in deployment manifest with commit SHA for traceability
   
 ### Technical Details
 
 **CI Job Steps:**
-- Checkout code (actions/checkout@v4)
-- Set up Python 3.11
 - Build `agent-api:ci` Docker image
 - Build `eval-runner:ci` Docker image
-- Start agent-api container on isolated network with `PROMPT_VERSION=ci-<SHA>` label
+- Start agent-api container on isolated network
 - Run eval-runner against the API (will fail if thresholds not met)
-- Update the image tag with commit sha and push to container registry(not implement)
 - Cleanup containers and network (always runs, even on failure)
 
 **Deploy Job Steps:**
-- Only runs on `refs/heads/master` with `push` event (no PR deployments)
-- Requires `contents: write` permission for git commits
+- Only runs on `refs/heads/master` with `push` event
 - Stamps manifest: updates `image_tag` field to full commit SHA
 - Records deployment history as comments (timestamp, short SHA, actor)
 - Uses Python script for reliable multi-line history appending (sed is fragile for this)
 - Commits updated manifest with `[skip ci]` tag to prevent re-triggering CI
 
----
 
 ## Task 2
 
 **File:** `prometheus/alert-rules.yml`
 
 ### Implementation Summary
-Designed 7 alert rules across three groups: availability, quality, and performance. Each alert is justified with specific thresholds and reasoning to avoid alert fatigue while catching real issues.
+Designed 7 alert rules across three groups: availability, quality, and performance.
 
 ### Alert Rules
 
@@ -59,8 +54,6 @@ Designed 7 alert rules across three groups: availability, quality, and performan
 **6. HighRequestLatency** (Warning): Normal request has p95 < 50ms. >1s sustained is abnormal. Alert on p95 (not p50) to avoid noise from occasional slow requests.
 
 **7. HighErrorRate** (Warning): >5% error rate suggests broken client or API regression. 400s are somewhat expected; >5% is abnormal.
----
-
 ## Task 3
 
 **File:** `agent-api/app.py`
@@ -73,8 +66,8 @@ agent_requests_total
   labels: prompt_version, route, rejected, reason, http_status
 ```
 - **Purpose:** Total request count broken down by all outcome dimensions
-- **Design:** Multi-label counter avoids metric explosion. 2 routes × 2 rejected states × 5 reasons × 3 status codes ≈ 60 series (manageable cardinality)
-- **Why:** Enables slicing by any dimension without joins. Alert rules and dashboards use this single metric for rejection rate, error rate, and traffic analysis
+- **Design:** Multi-label counter avoids metric explosion.
+- **Why:** Enables slicing by any dimension without joins. Alert rules and dashboards use this single metric for rejection rate, and request rate.
 
 #### 2. REQUEST_LATENCY (Histogram)
 ```
@@ -83,7 +76,7 @@ agent_request_latency_seconds
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
 ```
 - **Purpose:** End-to-end latency distribution for /ask endpoint
-- **Design:** Buckets chosen for regex-based classifier (5ms–5s range). Labels only on (prompt_version, route).
+- **Design:** Buckets chosen for regex-based classifier (5ms–5s range).
 - **Why:** Operators need p50/p95 to distinguish median vs. tail latency. Alert on p95 > 1s to catch sustained slowness
 
 #### 3. MESSAGE_LENGTH (Histogram)
@@ -104,16 +97,12 @@ agent_build_info
 ```
 - **Purpose:** Running version metadata, value always 1(For real world usecase, need to update it with the commit-sha)
 - **Design:** Grafana can plot this as a step function to annotate version-change events on dashboards
-- **Why:** Correlates metric anomalies with deployments. No need for joining on timestamp fields
+- **Why:** Correlates metric anomalies with deployments.
 
----
 
 ## Task 4
 
 **File:** `grafana/dashboards/agent-monitoring.json`
-
-### Implementation Summary
-Fixed 5 broken panels and wired them to metrics. Dashboard provides operators with a single-pane-of-glass for health assessment and incident triage.
 
 ### Panels Implemented
 
@@ -122,7 +111,7 @@ Fixed 5 broken panels and wired them to metrics. Dashboard provides operators wi
 - **Use:** Detect traffic drops (no traffic alert) or traffic spikes (possible attack)
 
 #### 2. Rejection Rate 
-- **Purpose:** Rejection rate over time, visually compare versions
+- **Purpose:** Rejection rate over time
 - **Use:** Spot gradual drift or sudden spikes (triggers HighRejectionRate or RejectionRateSpike alerts)
 
 #### 3. Rejections by Reason 
@@ -136,4 +125,18 @@ Fixed 5 broken panels and wired them to metrics. Dashboard provides operators wi
 ## Task 5
 **File:** `docs/incident-response.md` 
 - All detail in the file above.
+
 ---
+
+## Future Improvements
+
+### CI/CD Enhancements
+- **Image Tagging and Registry Push**: Tag images with commit SHA and push to container registry.
+- **Automated Rollbacks**: Enable rollbacks triggered by metric thresholds or health checks to reduce deployment downtime.
+
+### Monitoring and Metrics Expansion
+- **User Request Tracking**: Track user requests with sender IDs to monitor patterns and detect anomalies.
+- **Sub-process Monitoring**: Add latency and token usage metrics per AI agent step for bottleneck identification.
+- **Tool Usage Tracking**: Monitor tool usage per request, including frequency and success rates, for behavior analysis.
+- **User Feedback Integration**: Collect user feedback metrics for satisfaction and feature improvement insights.
+
